@@ -172,7 +172,34 @@ export const openAiChatStream = {
     }
 
     const parsedEvents = parseSerializedSse(lines);
-    if (parsedEvents.length <= 0) return lines;
+    if (parsedEvents.length <= 0) {
+      // serializeNormalizedStreamEvent/buildOpenAiStreamChunk returns nothing when
+      // there is no delta and no finishReason — which is exactly the case when the
+      // upstream sends a final chunk with only usage (choices: [], usage: {...}).
+      // Manually emit a usage-only chunk so the downstream client gets the data.
+      if (event.usagePayload || event.usageDetails) {
+        const usagePayload = {
+          ...(isRecord(event.usagePayload) ? event.usagePayload : {}),
+          ...(event.usageDetails?.prompt_tokens_details
+            ? { prompt_tokens_details: event.usageDetails.prompt_tokens_details }
+            : {}),
+          ...(event.usageDetails?.completion_tokens_details
+            ? { completion_tokens_details: event.usageDetails.completion_tokens_details }
+            : {}),
+        };
+        if (Object.keys(usagePayload).length > 0) {
+          return [`data: ${JSON.stringify({
+            id: context.id || `chatcmpl-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: context.created,
+            model: context.model,
+            choices: [],
+            usage: usagePayload,
+          })}\n\n`];
+        }
+      }
+      return lines;
+    }
 
     for (const parsed of parsedEvents) {
       const payload = parsed.payload;
